@@ -14,6 +14,7 @@ from sklearn import mixture
 from multidim_gpflow import MdGpflowGP
 from model_leraning_utils import UGP
 from model_leraning_utils import dummySVM
+from model_leraning_utils import SVMmodePredictionGlobal as SVMmodePrediction
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
 from sklearn.svm import SVC
@@ -25,6 +26,7 @@ from itertools import compress
 import pickle
 from blocks_sim import MassSlideWorld
 from model_leraning_utils import print_experts_gp, print_global_gp, print_transition_gp
+from model_leraning_utils import traj_with_moe, traj_with_globalgp
 
 MgGP_global_gp = MdGpflowGP
 MgGP_expert_gp = MdGpflowGP
@@ -48,17 +50,25 @@ load_all = False
 global_gp = True
 delta_model = False
 load_gp = load_all
-load_dpgmm = True
+load_dpgmm = False
 load_transition_gp = load_all
 load_experts = load_all
-load_svms = True
+load_svms = False
 
 fit_moe = True
 gp_shuffle_data = False
 min_prob_grid = 0.001 # 1%
 grid_size = 0.005
-p_noise_var = 1e-4
+# p_noise_var = 0.0026
+# p_noise_var = 0.
+p_noise_var = 1e-5
+# v_noise_var = 1e-3
+# v_noise_var = 0.0326
+# v_noise_var = 0.
 v_noise_var = 1e-4
+prob_min = 1e-3
+mc_factor = 10
+num_tarj_samples = 100
 
 exp_data = pickle.load( open(logfile, "rb" ), encoding='latin1' )
 gp_file = open('./heuristics_gp_params_file', 'w+')
@@ -105,6 +115,23 @@ ugp_params = {
     'beta': 0.,
 }
 
+# K = X_t_std_weighted_train.shape[0] // 3
+dpgmm_params = {
+    'n_components': 10,  # cluster size
+    'covariance_type': 'full',
+    'tol': 1e-6,
+    'n_init': 10,
+    'max_iter': 300,
+    'weight_concentration_prior_type': 'dirichlet_process',
+    'weight_concentration_prior': 1e-2,
+    'mean_precision_prior': None,
+    'mean_prior': None,
+    'degrees_of_freedom_prior': 2 + 2,
+    'covariance_prior': None,
+    'warm_start': False,
+    'init_params': 'random',
+}
+
 policy_params = exp_params['policy'] # TODO: the block_sim code assumes only 'm1' mode for control
 expl_noise = policy_params['m1']['noise_pol']
 # expl_noise = 3.
@@ -130,8 +157,10 @@ if global_gp:
         mdgp_glob = MgGP_global_gp(gpr_params, dX)
         start_time = time.time()
         if not delta_model:
+            print('Train global GP')
             mdgp_glob.fit(XU_t_train, X_t1_train)
         else:
+            print('Train global GP')
             mdgp_glob.fit(XU_t_train, dX_t_train)
         print ('Global GP fit time', time.time() - start_time)
         # exp_data['mdgp_glob'] = deepcopy(mdgp_glob)
@@ -230,6 +259,7 @@ if global_gp:
 
     # tm = np.array(range(H)) * dt
     tm = np.array(range(H))
+    Xs_t_test = XUs_t_test[:, :, :dX]
     plt.figure()
     plt.title('Long-term prediction with GP')
     plt.subplot(121)
@@ -260,22 +290,6 @@ if global_gp:
     # plt.show()
 if fit_moe:
     if not load_dpgmm:
-        K = X_t_std_weighted_train.shape[0] // 3
-        dpgmm_params = {
-            'n_components': K,  # cluster size
-            'covariance_type': 'full',
-            'tol': 1e-6,
-            'n_init': 10,
-            'max_iter': 1000,
-            'weight_concentration_prior_type': 'dirichlet_process',
-            'weight_concentration_prior':1e-1,
-            'mean_precision_prior':None,
-            'mean_prior': None,
-            'degrees_of_freedom_prior': 1+2,
-            'covariance_prior': None,
-            'warm_start': False,
-            'init_params': 'random',
-        }
         dpgmm = mixture.BayesianGaussianMixture(**dpgmm_params)
         start_time = time.time()
         dpgmm.fit(X_t_std_weighted_train)
@@ -346,6 +360,7 @@ if fit_moe:
     plt.xlabel('Time, t')
     plt.ylabel('Velocity, m/s')
     plt.savefig('clustered_trajs.pdf')
+    plt.show(block=False)
 
     if not load_transition_gp:
         # transition GP
@@ -381,6 +396,7 @@ if fit_moe:
             Y = np.array(trans_dicts[trans_data]['Y']).reshape(-1, dX)
             trans_dicts[trans_data]['Y'] = Y
             mdgp = MgGP_trans_gp(trans_gpr_params, Y.shape[1])
+            print('Train trans GP', trans_data)
             mdgp.fit(XU, Y)
             # trans_dicts[trans_data]['mdgp'] = deepcopy(mdgp)
             trans_dicts[trans_data]['mdgp'] = mdgp
@@ -441,7 +457,10 @@ if fit_moe:
         for label in labels:
             x_train = XU_t_train[(np.logical_and((dpgmm_Xt_train_labels == label), (dpgmm_Xt1_train_labels == label)))]
             y_train = X_t1_train[(np.logical_and((dpgmm_Xt_train_labels == label), (dpgmm_Xt1_train_labels == label)))]
+            if delta_model:
+                y_train = y_train - x_train[:, :dX]
             mdgp = MgGP_expert_gp(expert_gpr_params, y_train.shape[1])
+            print('Train expert GP', label)
             mdgp.fit(x_train, y_train)
             # experts[label] = deepcopy(mdgp)
             experts[label] = mdgp
@@ -462,7 +481,7 @@ if fit_moe:
                             'param_grid': {"C": np.logspace(-10, 10, endpoint=True, num=11, base=2.),
                                            "gamma": np.logspace(-10, 10, endpoint=True, num=11, base=2.)},
                             'scoring': 'accuracy',
-                            'cv': 5,
+                            # 'cv': 5,
                             'n_jobs':-1,
                             'iid': False,
                             'cv':3,
@@ -475,48 +494,19 @@ if fit_moe:
         }
         # svm for each mode
         start_time = time.time()
-
-        SVMs = {}
-        XUs_t_std_train = XU_t_std_train.reshape(n_train, T, -1)
         dpgmm_Xts_train_labels = dpgmm_Xt_train_labels.reshape(n_train, T)
-        XUnI_svm = []
-        dpgmm_Xts_train_labels_svm = []
-        for i in range(n_train):
-            xu_t_std_train = XUs_t_std_train[i]
-            dpgmm_xt_train_labels = dpgmm_Xts_train_labels[i]
-            dpgmm_Xts_train_labels_svm.extend(dpgmm_xt_train_labels[:-1])
-            xuni = zip(xu_t_std_train[:-1, :], dpgmm_xt_train_labels[1:])
-            XUnI_svm.extend(xuni)
-        dpgmm_Xts_train_labels_svm = np.array(dpgmm_Xts_train_labels_svm)
-        for label in labels:
-            xui = list(compress(XUnI_svm, (dpgmm_Xts_train_labels_svm == label)))
-            xu, i = zip(*xui)
-            xu = np.array(xu)
-            i = list(i)
-            cnts_list = list(Counter(i).items())
-            svm_check_ok = True
-            for cnts in cnts_list:
-                if cnts[1] < svm_grid_params['cv']:
-                    svm_check_ok = True #TODO: this check is disabled.
-            if len(cnts_list)>1 and svm_check_ok==True:
-                clf = GridSearchCV(SVC(**svm_params), **svm_grid_params)
-                clf.fit(xu, i)
-                SVMs[label] = deepcopy(clf)
-                del clf
-            else:
-                print ('detected dummy svm:', label)
-                dummy_svm = dummySVM(cnts_list[0][0])
-                SVMs[label] = deepcopy(dummy_svm)
-                del dummy_svm
-
-        print ('SVMs training time:', time.time() - start_time)
-        exp_data['svm'] = deepcopy(SVMs)
+        mode_predictor = SVMmodePrediction(svm_grid_params, svm_params)
+        mode_predictor.train(XUs_t_train, dpgmm_Xts_train_labels, labels)
+        exp_data['mode_predictor'] = deepcopy(mode_predictor)
         pickle.dump(exp_data, open(logfile, "wb"))
+
+        # exp_data['svm'] = deepcopy(SVMs)
+        # pickle.dump(exp_data, open(logfile, "wb"))
     else:
-        if 'svm' not in exp_data:
+        if 'mode_predictor' not in exp_data:
             assert(False)
         else:
-            SVMs = exp_data['svm']
+            mode_predictor = exp_data['mode_predictor']
 
     # long-term prediction for MoE method
     if blocks_exp:
@@ -538,7 +528,7 @@ if fit_moe:
     x_mu_t_std = X_scaler.transform(x_mu_t.reshape(1, -1))
     mode0 = dpgmm.predict(x_mu_t_std.reshape(1, -1))
     mode0 = np.asscalar(mode0)
-    mc_sample_size = (dX + dU) * 10  # TODO: put this param in some proper place
+    mc_sample_size = (dX + dU) * mc_factor  # TODO: put this param in some proper place
     num_modes = len(labels)
     modes = labels
     Y_mu = np.zeros((2 * (dX + dU) + 1, dX))
@@ -562,9 +552,10 @@ if fit_moe:
             track[5] = u_var_t
             xtut_s = np.random.multivariate_normal(xu_mu_t, xu_var_t, mc_sample_size)
             assert (xtut_s.shape == (mc_sample_size, dX + dU))
-            xtut_s_std = XU_scaler.transform(xtut_s)
-            clf = SVMs[md]
-            mode_dst = clf.predict(xtut_s_std)
+            # xtut_s_std = XU_scaler.transform(xtut_s)
+            # clf = SVMs[md]
+            # mode_dst = clf.predict(xtut_s_std)
+            mode_dst = mode_predictor.predict(xtut_s, md)
             mode_counts = Counter(mode_dst).items()
             total_samples = 0
             mode_prob = dict(zip(labels, [0] * len(labels)))
@@ -601,11 +592,18 @@ if fit_moe:
                 p_next = mode_pred['p']
                 xu_mu_s_ = mode_pred['mu']
                 xu_var_s_ = mode_pred['var']
-                if p_next > 1e-4:
+                if p_next > prob_min:
                     # get the next state
                     if md_next == md:
                         gp = experts[md]
-                        x_mu_t_next_new, x_var_t_next_new, _, _, _ = ugp_experts_dyn.get_posterior(gp, xu_mu_t, xu_var_t)
+                        if not delta_model:
+                            x_mu_t_next_new, x_var_t_next_new, _, _, _ = ugp_experts_dyn.get_posterior(gp, xu_mu_t, xu_var_t)
+                        else:
+                                dx_mu_t_next_new, dx_var_t_next_new, _, _, xudx_covar = ugp_experts_dyn.get_posterior(gp, xu_mu_t,
+                                                                                                           xu_var_t)
+                                xdx_covar = xudx_covar[:dX, :]
+                                x_mu_t_next_new = x_mu_t + dx_mu_t_next_new
+                                x_var_t_next_new = x_var_t + dx_var_t_next_new + xdx_covar + xdx_covar.T
                     else:
                         gp_trans = trans_dicts[(md, md_next)]['mdgp']
                         # x_mu_t_next_new, x_var_t_next_new, _, _, _ = ugp_experts_dyn.get_posterior(gp_trans, xu_mu_t,
@@ -619,13 +617,13 @@ if fit_moe:
                     else:
                         md_ = md
                     if len(tracks_next)==0:
-                        if p*p_next > 1e-4:
+                        if p*p_next > prob_min:
                             sim_data_tree[t+1].append([md_next, md_, x_mu_t_next_new, x_var_t_next_new, 0., 0., p*p_next])
                     else:
                         md_next_curr_list = [track_next[0] for track_next in tracks_next]
                         if md_next not in md_next_curr_list:
                             # md_next not already in the t+1 time step
-                            if p * p_next > 1e-4:
+                            if p * p_next > prob_min:
                                 sim_data_tree[t + 1].append(
                                     [md_next, md_, x_mu_t_next_new, x_var_t_next_new, 0., 0., p * p_next])
                         else:
@@ -637,7 +635,7 @@ if fit_moe:
                             md_next_curr_trans_list = [(track_next[1], track_next[0]) for track_next in tracks_next]
                             if (md_, md_next) not in md_next_curr_trans_list:
                                 # the same transition track is not present
-                                if p * p_next > 1e-4:
+                                if p * p_next > prob_min:
                                     sim_data_tree[t + 1].append(
                                         [md_next, md_, x_mu_t_next_new, x_var_t_next_new, 0., 0., p * p_next])
                             else:
@@ -658,7 +656,7 @@ if fit_moe:
                                                             w2 * np.outer(x_mu_t_next_new, x_mu_t_next_new) -\
                                                             np.outer(mu_next_comb,mu_next_comb)
                                             p_next_comb = p_next_curr + p_next_new
-                                            if p_next_comb > 1e-4:
+                                            if p_next_comb > prob_min:
                                                 sim_data_tree[t + 1][it] = \
                                                     [md_next, md_, mu_next_comb, var_next_comb, 0., 0., p_next_comb]
                                     it+=1
@@ -667,7 +665,8 @@ if fit_moe:
         prob_mode_tot = 0.
         for track_ in sim_data_tree[t]:
                 prob_mode_tot += track_[6]
-        if (prob_mode_tot - 1.0) > 1e-4:
+            # print(prob_mode_tot)
+        if (prob_mode_tot - 1.0) > prob_min:
             assert (False)
 
     print ('Prediction time for MoE UGP with horizon', H, ':', time.time() - start_time)
@@ -691,6 +690,16 @@ if fit_moe:
             path_dict[path]['X_var'].append(track[3])
             path_dict[path]['prob'].append(track[6])
 
+    # plot probabilities
+    tot_prob = np.zeros(H)
+    plt.figure()
+    for pathkey in path_dict:
+        path = path_dict[pathkey]
+        t = path['time']
+        p = path['prob']
+        c = path['col']
+        plt.plot(t, p, color=c)
+    plt.plot(block=False)
 
     # plot for tree structure
     # plot long term prediction results of UGP
@@ -709,6 +718,7 @@ if fit_moe:
         vel = np.array(path['X'])[:, dP:dX].reshape(-1)
         vel_std = np.sqrt(np.array(path['X_var'])[:, dP:dX, dP:dX]).reshape(time.shape[0])
         prob = np.array(path['prob']).reshape(-1,1)
+        prob = np.clip(prob, 0., 1.)
         col = np.tile(path['col'], (time.shape[0],1))
         rbga_col = np.concatenate((col, prob), axis=1)
         plt.subplot(121)
@@ -719,12 +729,14 @@ if fit_moe:
         plt.fill_between(time, vel - vel_std * 1.96, vel + vel_std * 1.96, alpha=0.2, color=path['col'])
 
     # plot training data
-    x = Xs_t_train[0]
+    x = Xs_t_test[0]
+    # x = Xs_t_train[0]
     plt.subplot(121)
     plt.plot(tm, x[:H, :dP], ls='--', color='k', alpha=0.2, label='Training data')
     plt.subplot(122)
     plt.plot(tm, x[:H, dP:dP + dV], ls='--', color='k', alpha=0.2, label='Training data')
-    for x in Xs_t_train[1:]:
+    for x in Xs_t_test[1:]:
+    # for x in Xs_t_train[1:]:
         plt.subplot(121)
         plt.plot(tm, x[:H, :dP], ls='--', color='k', alpha=0.2)
         # plt.legend()
@@ -732,6 +744,16 @@ if fit_moe:
         plt.plot(tm, x[:H, dP:dP+dV], ls='--', color='k', alpha=0.2)
         # plt.legend()
     plt.savefig('method_result.pdf')
+
+    massSlideWorld.reset()
+    num_samples = num_tarj_samples
+    traj_with_moe_ = traj_with_moe(sim_data_tree, experts, trans_dicts, massSlideWorld, dlt_mdl=delta_model)
+    _ = traj_with_moe_.sample(num_samples, H)
+    traj_with_moe_.plot_samples()
+    params = deepcopy(dpgmm_params)
+    params['n_components'] = 2
+    params['n_init'] = 3
+    traj_with_moe_.estimate_gmm_traj_density(params, Xs_t_test)
 
     # compute long-term prediction score
     XUs_t_test = exp_data['XUs_t_test']
