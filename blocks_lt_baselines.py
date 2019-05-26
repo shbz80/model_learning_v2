@@ -26,10 +26,10 @@ import tensorflow as tf
 
 #exp settings
 n_repeat = 1  #number of training instances for nn approaches
-horizons = [39]
+horizons = [74]
 
 #data and control things
-logfile = "/home/shahbaz/Research/Software/model_learning/Results/blocks_exp_preprocessed_data_rs_1.dat"
+logfile = "/home/shahbaz/Research/Software/model_learning/Results/blocks_exp_preprocessed_data_rs_1_mm.p"
 
 exp_data = pickle.load( open(logfile, "rb" ), encoding='latin1' )
 #print(exp_data.keys())
@@ -45,10 +45,12 @@ dt = exp_params['dt'] # sampling time
 n_train = exp_data['n_train'] # number or trials in training data
 n_test = exp_data['n_test'] # number or trials in testing data
 
-XU_t_train = exp_data['XU_t_train'] # shape: n_train*T, dXU, state-action, sequential data
 XUs_t_train = exp_data['XUs_t_train'] # shape: n_train, T, dXU, state-action, sequential data
-X_t1_train = exp_data['X_t1_train'] # shape: n_train*T, dX, next state, sequential data
-Xs_t_train = XUs_t_train[:,:T,:dX]
+XU_t_train = XUs_t_train.reshape(-1, XUs_t_train.shape[-1]) # shape: n_train*T, dXU, state-action, sequential data
+Xs_t1_train = exp_data['Xs_t1_train']
+X_t1_train = Xs_t1_train.reshape(-1, Xs_t1_train.shape[-1]) # shape: n_train*T, dX, next state, sequential data
+Xs_t_train = exp_data['Xs_t_train']
+U0_t_train = XUs_t_train[0, :, dX:dX+dU]
 
 ugp_params = {
     'alpha': 1.,
@@ -94,7 +96,7 @@ ugp_global_pol = UGP(dX, **ugp_params) # initialize unscented transform for poli
 x_mu_t = exp_data['X0_mu']  # mean of initial state distr
 x_var_t = np.diag(exp_data['X0_var'])
 x_var_t[1,1] = 1e-6   # setting small variance for initial vel    # TODO: cholesky failing for zero v0 variance
-
+X0 = np.random.multivariate_normal(x_mu_t, x_var_t, 6)
 
 ############ Policy assumptions #######
 '''
@@ -119,7 +121,7 @@ return U, U_noise
 #
 #         # for BNN
 #         tf.reset_default_graph()
-#         model = DynamicsPredictor(model=BNNDynamics(layers=[3, 5, 2], n_nets=5, name='bnn2d'))  # input 3d , output 2d
+#         model = DynamicsPredictor(model=BNNDynamics(layers=[3, 32, 2], n_nets=5, name='bnn2d'))  # input 3d , output 2d
 #
 #         model.train(XU_t_train, X_t1_train)
 #
@@ -145,6 +147,7 @@ return U, U_noise
 #             X_var_pred.append(x_var_t)
 #             # UT method for one step dynamics prediction
 #             x_mu_t, x_var_t = model.predict(np.array([xu_mu_t]), np.array([xu_var_t]))
+#             x_var_t = x_var_t + np.eye(dX, dX) * 1e-6
 #             # unpack because our method takes a batch as input
 #             x_mu_t = x_mu_t[0]
 #             x_var_t = x_var_t[0]
@@ -205,8 +208,8 @@ return U, U_noise
 #
 #         del model
 # np.save('bnn_res', bnn_res)
-#
-#
+
+
 # # for multimodal output of BNN
 # # here we adopt a simple propagation rule: treat each gaussian output in the ensemble as a local model by itself and maintain the ensemble all through the trajectory
 # bnn_multm_res = dict()
@@ -271,6 +274,7 @@ return U, U_noise
 #                 # x_mu_t, x_var_t = model.predict(np.array([xu_mu_t]), np.array([xu_var_t]))
 #
 #                 x_mu_t_new, x_var_t_new, _, _, _ = ugp_global_dyn.get_posterior(predictors[i_model], xu_mu_t, xu_var_t)
+#                 x_var_t_new = x_var_t_new + np.eye(dX, dX)*1e-6
 #
 #                 # unpack because our method takes a batch as input
 #                 x_mu_t[i_model] = x_mu_t_new
@@ -434,15 +438,16 @@ for h in horizons:
 np.save('mgp_res', mgp_res)
 
 #visualize results
-# bnn_res = np.load('bnn_res.npy').item()['horizon_39']
+# bnn_res = np.load('bnn_res.npy').item()['horizon_74']
 # bnn_multm_res = np.load('bnn_multm_res.npy').item()['horizon_39']
-mgp_res = np.load('mgp_res.npy').item()['horizon_39']
+mgp_res = np.load('mgp_res.npy').item()['horizon_74']
 
 #lets see scores
 eval_horizons = [5, 9, 19, 29, 39]
 
 # approaches = ['mGP', 'BNN', 'BNN-MM']
-approaches = ['BNN', 'BNN-MM']
+# approaches = ['BNN', 'BNN-MM']
+approaches = ['BNN']
 
 mgp_score_avg = []
 mgp_score_std = []
@@ -456,8 +461,8 @@ for h in eval_horizons:
     bnn_score = []
     for trial in range(1):
         #only look at the one repetition for the consistency with Shahbaz's criterion
-        #bnn_score.append(np.mean(bnn_res[trial]['ll_score'][:h]))
-        #mgp_score.append(np.mean(mgp_res[trial]['ll_score'][:h]))
+        # bnn_score.append(np.mean(bnn_res[trial]['ll_score'][:h]))
+        mgp_score.append(np.mean(mgp_res[trial]['ll_score'][:h]))
         # bnn_score = bnn_res[trial]['ll_score'][:h]
         # bnn_mm_score = bnn_multm_res[trial]['ll_score'][:h]
         mgp_score = mgp_res[trial]['ll_score'][:h]
@@ -485,6 +490,7 @@ ax.set_ylabel('Log-likelihood Score', fontsize=16)
 
 # ax.legend((mgp_plt, bnn_plt, bnn_mm_plt), approaches, fontsize=16)
 # ax.legend((bnn_plt, bnn_mm_plt), approaches, fontsize=16)
+# ax.legend((bnn_plt), approaches, fontsize=16)
 ax.legend((mgp_plt), approaches, fontsize=16)
 ax.grid()
 plt.show()
