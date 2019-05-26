@@ -160,11 +160,11 @@ for h in horizons:
         if update_bnn_score:
             bnn_results['rmse'].append(rmse)
             bnn_results['nll'].append((nll_mean, nll_std))
-            pickle.dump(bnn_results, open(result_file, "wb"))
+            pickle.dump(bnn_results, open(result_file, "wb"), protocol=2)
         if update_bnn_data:
             bnn_results['traj_samples'] = traj_samples
             bnn_results['density_est'] = traj_with_BNN
-            pickle.dump(bnn_results, open(result_file, "wb"))
+            pickle.dump(bnn_results, open(result_file, "wb"), protocol=2)
 
 np.save('bnn_res', bnn_res)
 

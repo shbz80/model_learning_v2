@@ -207,11 +207,11 @@ for h in horizons:
         if update_mgp_score:
             mgp_results['rmse'].append(rmse)
             mgp_results['nll'].append((nll_mean, nll_std))
-            # pickle.dump(mgp_results, open(result_file, "wb"))
+            # pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
         if update_mgp_data:
             mgp_results['traj_samples'] = traj_samples
-            # pickle.dump(mgp_results, open(result_file, "wb"))
-    pickle.dump(mgp_results, open(result_file, "wb"))
+            # pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
+    pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
 np.save('mgp_res', mgp_res)
 
 #visualize results
