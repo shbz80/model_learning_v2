@@ -23,10 +23,18 @@ n_repeat = 1  #number of training instances for nn approaches
 horizons = [74]
 
 #data and control things
-logfile = "/home/shahbaz/Research/Software/model_learning/Results/blocks_exp_preprocessed_data_rs_1_mm.p"
-result_file = "/home/shahbaz/Research/Software/model_learning/Results/results_blocks_mgp.p"
+# logfile = "/home/shahbaz/Research/Software/model_learning/Results/blocks_exp_preprocessed_data_rs_1_mm.p"   # small data
+# logfile = "/home/shahbaz/Research/Software/model_learning/Results/blocks_exp_preprocessed_data_rs_1_mm_bigdata.p"
+# result_file = "/home/shahbaz/Research/Software/model_learning/Results/results_blocks_mgp_bigdata.p"
+logfile = "/home/shahbaz/Research/Software/model_learning/Results/blocks_exp_preprocessed_data_rs_1_mm_smalldata.p"
+result_file = "/home/shahbaz/Research/Software/model_learning/Results/results_blocks_mgp_smalldata.p"
 
 exp_data = pickle.load( open(logfile, "rb" ), encoding='latin1' )
+
+# mgp_results = {}
+mgp_results = pickle.load( open(result_file, "rb" ), encoding='latin1' )
+mgp_results['rmse'] = []
+mgp_results['nll'] = []
 
 #print(exp_data.keys())
 exp_params = exp_data['exp_params']
@@ -70,7 +78,7 @@ expl_noise = policy_params['m1']['noise_pol']
 H = T  # prediction horizon
 delta_model = True
 update_mgp_data = False
-update_mgp_score = False
+update_mgp_score = True
 
 num_traj_samples = 50
 #and world
@@ -109,6 +117,18 @@ dpgmm_params = {
     'init_params': 'random',
 }
 
+layer_grid = [  [3, 8, 8, 2],
+                [3, 16, 16, 2],
+                [3, 32, 32, 2],
+                # [3, 64, 64, 2],
+                [3, 8, 8, 8, 2],
+                [3, 16, 16, 16, 2],
+                [3, 32, 32, 32, 2],
+                                     ]
+# n_repeat = len(layer_grid)
+n_repeat = 10
+network_layers = [3, 32, 32, 2]
+
 massSlideWorld.reset()
 mgp_res = dict()
 for h in horizons:
@@ -119,12 +139,16 @@ for h in horizons:
 
         # for mGP
         # tf.reset_default_graph()
-        model = DynamicsPredictor(model=GaussianProcessDynamics(kern=NNFeaturedSE(3, [3, 32, 32, 2])))
+        model = DynamicsPredictor(model=GaussianProcessDynamics(kern=NNFeaturedSE(3, network_layers)))
 
+        start_time = time.time()
         if delta_model:
             model.train(XU_t_train, dX_t_train)
         else:
             model.train(XU_t_train, X_t1_train)
+        training_time = time.time() - start_time
+        mgp_results['train_time'] = time.time() - start_time
+        print('mGP training time', training_time)
 
         dX_t_test_pred, _ = model.model.predict_f(XU_t_test)
 
@@ -139,6 +163,7 @@ for h in horizons:
         x_var_t[1, 1] = 1e-6  # setting small variance for initial vel    # TODO: cholesky failing for zero v0 variance
 
         traj_samples = np.zeros((num_traj_samples, h, dX))
+        start_time = time.time()
         for s in range(num_traj_samples):
             traj_samples[s][0] = np.random.multivariate_normal(x_mu_t, x_var_t)
             for t in range(1, h):
@@ -157,22 +182,23 @@ for h in horizons:
                     traj_samples[s][t] = np.random.multivariate_normal(mu, var)
                 else:
                     traj_samples[s][t] = np.random.multivariate_normal(mu, var) + traj_samples[s][t - 1]
-        # plot taraj samples
-        plt.figure()
-        plt.subplot(121)
-        plt.title('Pos')
-        plt.plot(range(T), traj_samples[:, :, 0].T, color='g', alpha=0.1)
-        for i in range(0, n_train):
-            plt.plot(range(T), Xs_t_train[i, :T, :dP], ls='--', color='g', alpha=0.2)
-        plt.subplot(122)
-        plt.title('Vel')
-        plt.plot(range(T), traj_samples[:, :, 1].T, color='b', alpha=0.1)
-        for i in range(0, n_train):
-            plt.plot(range(T), Xs_t_train[i, :T, dP:], ls='--', color='b', alpha=0.2)
-        plt.show(block=False)
+        # # plot taraj samples
+        # plt.figure()
+        # plt.subplot(121)
+        # plt.title('Pos')
+        # plt.plot(range(T), traj_samples[:, :, 0].T, color='g', alpha=0.1)
+        # for i in range(0, n_train):
+        #     plt.plot(range(T), Xs_t_train[i, :T, :dP], ls='--', color='g', alpha=0.2)
+        # plt.subplot(122)
+        # plt.title('Vel')
+        # plt.plot(range(T), traj_samples[:, :, 1].T, color='b', alpha=0.1)
+        # for i in range(0, n_train):
+        #     plt.plot(range(T), Xs_t_train[i, :T, dP:], ls='--', color='b', alpha=0.2)
+        # plt.show(block=False)
 
         traj_with_mGP.sample_trajs = traj_samples
-        nll_mean, nll_std, rmse, X_test_log_ll = traj_with_mGP.estimate_gmm_traj_density(dpgmm_params, Xs_t_test, plot=True)
+        nll_mean, nll_std, rmse, X_test_log_ll = traj_with_mGP.estimate_gmm_traj_density(dpgmm_params, Xs_t_test, plot=False)
+        mgp_results['pred_time'] = time.time() - start_time
         print('NLL mean (mm): ', nll_mean, 'NLL std (mm): ', nll_std, 'RMSE:', rmse)
 
 
@@ -182,11 +208,6 @@ for h in horizons:
 
         del model
 
-        # mgp_results = {}
-        # mgp_results['rmse'] = []
-        # mgp_results['nll'] = []
-
-        mgp_results = pickle.load( open(result_file, "rb" ), encoding='latin1' )
         if update_mgp_score:
             mgp_results['rmse'].append(rmse)
             mgp_results['nll'].append((nll_mean, nll_std))
@@ -195,36 +216,36 @@ for h in horizons:
             mgp_results['traj_samples'] = traj_samples
             mgp_results['density_est'] = traj_with_mGP
             pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
-
-np.save('mgp_res', mgp_res)
-
-#visualize results
-mgp_res = np.load('mgp_res.npy').item()['horizon_74']
-
-#lets see scores
-eval_horizons = [5, 34, 74]
-approaches = ['mGP']
-
-mgp_score_avg = []
-mgp_score_std = []
-
-for h in eval_horizons:
-    mgp_score = []
-    for trial in range(1):
-        mgp_score = mgp_res[trial]['ll_score'][:h]
-    mgp_score_avg.append(np.mean(mgp_score))
-    mgp_score_std.append(np.std(mgp_score))
-
-print(mgp_score_avg, mgp_score_std)
-
-#%matplotlib auto
-fig = plt.figure()
-ax = fig.add_subplot(111)
-
-mgp_plt = ax.bar(eval_horizons, mgp_score_avg, yerr=mgp_score_std)
-ax.set_xlabel('Prediction Horizon', fontsize=16)
-ax.set_ylabel('Log-likelihood Score', fontsize=16)
-ax.legend((mgp_plt), approaches, fontsize=16)
-ax.grid()
-plt.show()
+#
+# np.save('mgp_res', mgp_res)
+#
+# #visualize results
+# mgp_res = np.load('mgp_res.npy').item()['horizon_74']
+#
+# #lets see scores
+# eval_horizons = [5, 34, 74]
+# approaches = ['mGP']
+#
+# mgp_score_avg = []
+# mgp_score_std = []
+#
+# for h in eval_horizons:
+#     mgp_score = []
+#     for trial in range(1):
+#         mgp_score = mgp_res[trial]['ll_score'][:h]
+#     mgp_score_avg.append(np.mean(mgp_score))
+#     mgp_score_std.append(np.std(mgp_score))
+#
+# print(mgp_score_avg, mgp_score_std)
+#
+# #%matplotlib auto
+# fig = plt.figure()
+# ax = fig.add_subplot(111)
+#
+# mgp_plt = ax.bar(eval_horizons, mgp_score_avg, yerr=mgp_score_std)
+# ax.set_xlabel('Prediction Horizon', fontsize=16)
+# ax.set_ylabel('Log-likelihood Score', fontsize=16)
+# ax.legend((mgp_plt), approaches, fontsize=16)
+# ax.grid()
+# plt.show()
 None
