@@ -1,7 +1,7 @@
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
-from model_leraning_utils import UGP, SimplePolicy
+from model_leraning_utils import UGP, SimplePolicy, yumi_joint_limits
 import time
 import pickle
 import os
@@ -21,11 +21,12 @@ horizons = [99]
 # result_file = "/home/shahbaz/Research/Software/model_learning/Results/results_yumi_mgp.p"
 # result_file = "/home/shahbaz/Research/Software/model_learning/Results/results_yumi_mgp_smalldata_dx_limit.p"
 # result_file = "/home/shahbaz/Research/Software/model_learning/Results/results_yumi_mgp_smalldata.p"
-result_file = "/home/shahbaz/Research/Software/model_learning/Results/Final/results_yumi_mgp_d15.p"
+result_file = "/home/shahbaz/Research/Software/model_learning/Results/Final/results_yumi_mgp_d15_3.p"
 mgp_results = {}
 # mgp_results = pickle.load( open(result_file, "rb" ), encoding='latin1' )
 mgp_results['rmse'] = []
 mgp_results['nll'] = []
+mgp_results['pred_mean'] = []
 
 # logfile = "/home/shahbaz/Research/Software/model_learning/Results/yumi_peg_exp_new_preprocessed_data_train_4.p"
 # logfile = "/home/shahbaz/Research/Software/model_learning/Results/yumi_peg_exp_new_preprocessed_data_train_big_data_wom10.p"
@@ -54,6 +55,12 @@ dX_t_train = X_t1_train - X_t_train
 dX_t_train_max = np.max(dX_t_train, axis=0)*3
 dX_t_train_min = np.min(dX_t_train, axis=0)*3
 max_delta_range = (dX_t_train_min, dX_t_train_max)
+
+yumi_joint_limits = np.array(yumi_joint_limits)
+yumi_joint_max = yumi_joint_limits[:,1]
+yumi_joint_min = yumi_joint_limits[:,0]
+max_state_range = (yumi_joint_min, yumi_joint_max)
+
 Xrs_t_train = exp_data['Xrs_t_train']
 Xrs_t_test = exp_data['Xrs_t_test']
 Us_t_train = exp_data['Us_t_train']
@@ -87,11 +94,12 @@ exp_params_rob['Kp'] = Kp + Kp * pol_per_facor
 jitter_var_tl = 1e-6
 print('dX:{0}, dU:{1}'.format(dX, dU))
 delta_model = True
-update_mgp_data = False
-update_mgp_score = False
+update_mgp_data = True
+update_mgp_score = True
 dx_limit = False
+max_range = True
 H = T  # prediction horizon
-num_traj_samples = 20
+num_traj_samples = 50
 
 # original simple policy
 Xrs_data = Xrs_t_test
@@ -102,20 +110,47 @@ pol = sim_pol.predict
 ugp_global_dyn = UGP(dX + dU, **ugp_params) # initialize unscented transform for dynamics
 ugp_global_pol = UGP(dX, **ugp_params) # initialize unscented transform for policy
 
-layer_grid = [  [dX+dU, 8, 8, 3],
-                [dX+dU, 16, 16, 3],
-                [dX+dU, 32, 32, 3],
-                [dX+dU, 8, 8, 6],
-                [dX+dU, 16, 16, 6],
-                [dX+dU, 32, 32, 6],
-                [dX+dU, 8, 8, 8, 3],
-                [dX+dU, 16, 16, 16, 3],
-                [dX+dU, 8, 8, 8, 6],
-                [dX+dU, 16, 16, 16, 6],
-              ]
-network_layer = [dX+dU, 32, 32, 32, dX]
-n_repeat = len(layer_grid)
-# n_repeat = 1
+#########log file _1 #######################
+# layer_grid = [  [dX+dU, 8, 8, 3],
+#                 [dX+dU, 16, 16, 3],
+#                 [dX+dU, 32, 32, 3],
+#                 [dX+dU, 64, 64, 3],
+#                 [dX+dU, 8, 8, 6],
+#                 [dX+dU, 16, 16, 6],
+#                 [dX+dU, 32, 32, 6],
+#                 [dX+dU, 64, 64, 6],
+#                 [dX+dU, 8, 8, 8, 3],
+#                 [dX+dU, 16, 16, 16, 3],
+#                 [dX+dU, 32, 32, 32, 3],
+#                 [dX+dU, 64, 64, 64, 3],
+#                 [dX + dU, 8, 8, 8, 6],
+#                 [dX + dU, 16, 16, 16, 6],
+#                 [dX + dU, 32, 32, 32, 6],
+#                 [dX + dU, 64, 64, 64, 6],
+#                 ]
+
+#########log file _2 #######################
+# layer_grid = [  [dX+dU, 8, 8, 9],
+#                 [dX+dU, 16, 16, 9],
+#                 [dX+dU, 32, 32, 9],
+#                 [dX+dU, 64, 64, 9],
+#                 [dX+dU, 8, 8, 12],
+#                 [dX+dU, 16, 16, 12],
+#                 [dX+dU, 32, 32, 12],
+#                 [dX+dU, 64, 64, 12],
+#                 [dX+dU, 8, 8, 8, 9],
+#                 [dX+dU, 16, 16, 16, 9],
+#                 [dX+dU, 32, 32, 32, 9],
+#                 [dX+dU, 64, 64, 64, 9],
+#                 [dX + dU, 8, 8, 8, 12],
+#                 [dX + dU, 16, 16, 16, 12],
+#                 [dX + dU, 32, 32, 32, 12],
+#                 [dX + dU, 64, 64, 64, 12],
+#                 ]
+
+network_layer = [dX+dU, 32, 32, 3]
+# n_repeat = len(layer_grid)
+n_repeat = 1
 
 mgp_res = dict()
 for h in horizons:
@@ -125,8 +160,8 @@ for h in horizons:
 
         # for mGP
         # tf.reset_default_graph()
-        model = DynamicsPredictor(model=GaussianProcessDynamics(kern=NNFeaturedSE(dX+dU, layer_grid[r])))
-        print('Training', layer_grid[r])
+        model = DynamicsPredictor(model=GaussianProcessDynamics(kern=NNFeaturedSE(dX+dU, network_layer)))
+        # print('Training', layer_grid[r])
         start_time = time.time()
         if delta_model:
             model.train(XU_t_train, dX_t_train)
@@ -134,9 +169,9 @@ for h in horizons:
             model.train(XU_t_train, X_t1_train)
         mgp_results['train_time'] = time.time() - start_time
 
-        dX_t_test_pred, _ = model.model.predict_f(XU_t_test)
-        mgp_test_score = np.linalg.norm(dX_t_test - dX_t_test_pred)
-        print('mgp 1step test score for', layer_grid[r], mgp_test_score)
+        # dX_t_test_pred, _ = model.model.predict_f(XU_t_test)
+        # mgp_test_score = np.linalg.norm(dX_t_test - dX_t_test_pred)
+        # print('mgp 1step test score for', layer_grid[r], mgp_test_score)
 
         # prediction
         x_mu_t = exp_data['X0_mu']  # mean of initial state distr
@@ -166,9 +201,12 @@ for h in horizons:
                         dx_new[dx_new > max_delta_range[1]] = 0.
                         dx_new[dx_new < max_delta_range[0]] = 0.
                     x_new = dx_new + traj_samples[s][t - 1]
+                if max_range is True:  # restrict predicted values to within the joint range
+                    x_new = np.clip(x_new, max_state_range[0], max_state_range[1])
                 traj_samples[s][t] = x_new
 
         traj_mean = np.mean(traj_samples, axis=0)
+        mgp_results['pred_mean'].append(traj_mean)
         traj_std = np.sqrt(np.var(traj_samples, axis=0))
         traj_covar = np.zeros((h, dX, dX))
         for t in range(h):
@@ -238,14 +276,14 @@ for h in horizons:
         rmse = np.sqrt(np.mean(X_test_SE.reshape(-1)))
         print('Yumi exp mGP', 'NLL mean: ', nll_mean, 'NLL std: ', nll_std, 'RMSE:', rmse)
 
-        # del model
-        # if update_mgp_score:
-        #     mgp_results['rmse'].append(rmse)
-        #     mgp_results['nll'].append((nll_mean, nll_std))
-        #     pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
-        # if update_mgp_data:
-        #     mgp_results['traj_samples'] = traj_samples
-        #     pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
+        del model
+        if update_mgp_score:
+            mgp_results['rmse'].append(rmse)
+            mgp_results['nll'].append((nll_mean, nll_std))
+            pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
+        if update_mgp_data:
+            mgp_results['traj_samples'] = traj_samples
+            pickle.dump(mgp_results, open(result_file, "wb"), protocol=2)
 
 # np.save('mgp_res', mgp_res)
 #
